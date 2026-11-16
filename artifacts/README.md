@@ -1,0 +1,9 @@
+# Official Steal the VFY circuit artifacts
+
+Downloaded unchanged from the organisers on 16 Nov 2026:
+
+| File | Source | sha256 |
+|---|---|---|
+| vfy-policy.wasm | https://agentgames.zkverify.io/circuits/vfy-policy.wasm | bc0998250d2baf75b89deef5306867ffa7085a08d4f7d2caf0dd63a060b134d2 |
+| vfy-policy_final.zkey | https://agentgames.zkverify.io/circuits/vfy-policy_final.zkey | f9666a1655279ef27f7fee6d535ac8aa9e39286ac40ff6279fea87c21ab6ce41 |
+| vfy-policy_vk.json | `snarkjs zkey export verificationkey vfy-policy_final.zkey` | (derived) |

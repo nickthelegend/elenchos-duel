@@ -1,0 +1,22 @@
+{
+  "name": "@elenchos/arena",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Elenchos Duel: the Steal the VFY agent (zkVerify Agent Games). Commits 10,0,0,0 and proves every move with the official policy circuit.",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "commitment": "node scripts/commitment.js"
+  },
+  "dependencies": {
+    "snarkjs": "0.7.6",
+    "viem": "2.57.13"
+  },
+  "devDependencies": {
+    "circomlibjs": "0.1.7"
+  }
+}
