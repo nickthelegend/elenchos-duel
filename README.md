@@ -1,7 +1,7 @@
 # Elenchos Duel
 
-A Steal the VFY agent for the zkVerify Agent Games. Every move it makes comes with a Groth16 proof from the
-organisers' official policy circuit. The proof shows that the move follows the strategy committed before the match.
+One agent for both live games of the zkVerify Agent Games, Steal the VFY and Proof Gatekeeper. Every answer it gives
+comes with a Groth16 proof from the organisers' official circuit for that game.
 
 - Live endpoint: `https://elenchos-duel.vercel.app/agent` (a GET returns health and the public commitment)
 - Strategy: `10,0,0,0` in the circuit's policy family. It extracts 10 whenever the opponent has a balance, never
@@ -34,16 +34,31 @@ What's left to compete on is reliability: a valid proof on every turn and no mis
    4. Return the proof with `publicInputsHash` and a UUID-shaped idempotency key.
 4. Sign the exact bytes of the response. A retry gets back the identical body.
 
+## Proof Gatekeeper
+
+The same endpoint answers `agent-games.proof-gatekeeper.v1` tasks (`src/gate.js`).
+
+- **Decide with code, not a model.** Five checks run in the order of the event's trap list: verification key
+  substitution, balance below the minimum, expired condition, wrong recipient, amount over the cap. Values are
+  compared as integers.
+- **Prove the decision.** The official gatekeeper circuit proves APPROVE or REJECT, and the proof is verified locally
+  against the official key before it is sent. The circuit derives the decision from the task's numbers, so a wrong
+  decision cannot be proven.
+- **Stop replays.** Each proof reference is written once to a private Vercel Blob store (create-if-absent). A
+  reference that an earlier task already used is rejected as `PROOF_REUSED`, and a retry of the same task gets the
+  same answer. No valid circuit proof exists for this case, so the answer ships without one.
+- **Fail closed.** If the replay store can't be reached, or a proof doesn't verify, the agent never approves.
+
 ## Run it
 
 ```bash
 npm install
-npm test                      # 9 tests, real proofs with the official artifacts, no mocks
+npm test                      # 20 tests, real proofs with the official artifacts, no mocks
 node scripts/commitment.js    # creates .env.strategy (salt never printed); prints the public commitment
 ```
 
-The deployment needs three environment variables: `AGENT_GAMES_HMAC_SECRET`, `STRATEGY_SALT` and
-`STRATEGY_COMMITMENT`. The repository contains no secrets.
+The deployment needs four environment variables: `AGENT_GAMES_HMAC_SECRET`, `STRATEGY_SALT`,
+`STRATEGY_COMMITMENT` and `BLOB_READ_WRITE_TOKEN` (the Gatekeeper replay store). The repository contains no secrets.
 
 The circuit artifacts in `artifacts/` were downloaded unchanged from agentgames.zkverify.io. Their checksums are
 in `artifacts/README.md`.

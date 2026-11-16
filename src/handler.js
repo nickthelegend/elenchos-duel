@@ -1,7 +1,8 @@
 // Transport for the Agent Games webhook: verify the HMAC over the raw bytes before parsing, answer preflight,
-// play Steal the VFY turns, sign the exact response bytes.
+// decide Proof Gatekeeper tasks, play Steal the VFY turns, sign the exact response bytes.
 import { authenticate } from './hmac.js';
 import { playTurn, strategyFromEnv } from './steal.js';
+import { GATE_TYPE, blobSeen, playGate } from './gate.js';
 
 const out = (status, payload, signer) => {
   const body = JSON.stringify(payload);
@@ -15,7 +16,7 @@ export function checkIssued(e, now = Date.now()) {
   if (!Number.isFinite(at) || at > now + 120_000 || at < now - 600_000) throw new Error('Invalid or stale issue timestamp');
 }
 
-export async function handle(raw, signature, { secret, env = process.env, now = Date.now(), log = (o) => console.log(JSON.stringify(o)) }) {
+export async function handle(raw, signature, { secret, env = process.env, now = Date.now(), seen = blobSeen(env.BLOB_READ_WRITE_TOKEN), log = (o) => console.log(JSON.stringify(o)) }) {
   if (raw.length > 64 * 1024) return out(413, { error: 'Body too large' });
   const signer = authenticate(raw, signature, secret);
   if (!signer) { log({ at: 'auth-failed', bytes: raw.length, hasHeader: Boolean(signature) }); return out(401, { error: 'Invalid signature' }); }
@@ -29,6 +30,12 @@ export async function handle(raw, signature, { secret, env = process.env, now = 
     return out(400, { error: 'Invalid request' }, signer);
   }
   if (e.type === 'agent-games.preflight.v1') { log({ at: 'preflight', agent: e.agent_id }); return out(200, { ok: true, protocolVersion: 'v1' }, signer); }
+  if (e.type === GATE_TYPE) {
+    const started = Date.now();
+    const body = await playGate(e, raw.toString('utf8'), { seen, log, now: Date.now() });
+    log({ at: 'gate', mode: e.mode, task: e.task_id, decision: body.decision, reason: body.reason_code, proof: Boolean(body.proof), ms: Date.now() - started });
+    return out(200, body, signer);
+  }
   if (!(e.eventId === 'steal-the-vfy' || (e.matchId && e.turn !== undefined))) return out(400, { error: 'Unsupported task type' }, signer);
   const started = Date.now();
   try {

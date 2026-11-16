@@ -1,4 +1,4 @@
-# Official Steal the VFY circuit artifacts
+# Official circuit artifacts (Steal the VFY and Proof Gatekeeper)
 
 Downloaded unchanged from the organisers on 16 Nov 2026:
 
@@ -7,3 +7,6 @@ Downloaded unchanged from the organisers on 16 Nov 2026:
 | vfy-policy.wasm | https://agentgames.zkverify.io/circuits/vfy-policy.wasm | bc0998250d2baf75b89deef5306867ffa7085a08d4f7d2caf0dd63a060b134d2 |
 | vfy-policy_final.zkey | https://agentgames.zkverify.io/circuits/vfy-policy_final.zkey | f9666a1655279ef27f7fee6d535ac8aa9e39286ac40ff6279fea87c21ab6ce41 |
 | vfy-policy_vk.json | `snarkjs zkey export verificationkey vfy-policy_final.zkey` | (derived) |
+| gatekeeper.wasm | https://agentgames.zkverify.io/circuits/gatekeeper.wasm | be00aefe3c8ba910951a242f50e55937bf82a0375ad4b69c2ef10629ab92764f |
+| gatekeeper_final.zkey | https://agentgames.zkverify.io/circuits/gatekeeper_final.zkey | adfe95a439a7063a82a4967ef026d2dd6857a4d02c63b3caf63dac02e01af80d |
+| gatekeeper_vk.json | exported from gatekeeper_final.zkey | (derived) |

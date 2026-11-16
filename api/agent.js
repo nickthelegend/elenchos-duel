@@ -8,8 +8,8 @@ export async function POST(request) {
 
 export function GET() {
   return Response.json({
-    ok: true, protocolVersion: 'v1', agent: 'Elenchos Duel',
-    configured: { hmac: Boolean(process.env.AGENT_GAMES_HMAC_SECRET), strategy: Boolean(process.env.STRATEGY_SALT && process.env.STRATEGY_COMMITMENT) },
+    ok: true, protocolVersion: 'v1', agent: 'Elenchos Duel', events: ['steal-the-vfy', 'proof-gatekeeper'],
+    configured: { hmac: Boolean(process.env.AGENT_GAMES_HMAC_SECRET), strategy: Boolean(process.env.STRATEGY_SALT && process.env.STRATEGY_COMMITMENT), replayStore: Boolean(process.env.BLOB_READ_WRITE_TOKEN) },
     commitment: process.env.STRATEGY_COMMITMENT ? `0x${BigInt(process.env.STRATEGY_COMMITMENT).toString(16).padStart(64, '0')}` : null,
   }, { headers: { 'cache-control': 'no-store' } });
 }
