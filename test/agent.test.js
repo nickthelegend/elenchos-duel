@@ -96,3 +96,30 @@ test('missing strategy config fails loudly, not with a fake move', async () => {
   const r = await handle(raw, sig, { secret: SECRET, env: {}, log: quiet });
   assert.equal(r.status, 503);
 });
+
+test('prepared next turn: used when the state matches, ignored when it does not; responses keep the exact schema', async () => {
+  const { prepareNext, playTurn } = await import('../src/steal.js');
+  const cfg = { salt: SALT, commitment: COMMITMENT };
+  const logs = [];
+  const log = (o) => logs.push(o);
+  const matchId = '1c2d3e4f-5a6b-4c7d-8e9f-a0b1c2d3e4f5';
+  const t1 = turn({ matchId, turn: 1, state: { selfBalance: '100', opponentBalance: '100', selfFortifiedUntilTurn: null, opponentFortifiedUntilTurn: null } });
+  const b1 = await playTurn(t1, cfg, log);
+  await prepareNext(t1, cfg, log);
+  // mirror match: balances unchanged on turn 2 -> the prepared proof is used and is valid for exactly this turn
+  const t2 = turn({ matchId, turn: 2, state: { selfBalance: '100', opponentBalance: '100', selfFortifiedUntilTurn: null, opponentFortifiedUntilTurn: null } });
+  const b2 = await playTurn(t2, cfg, log);
+  assert.ok(logs.some((l) => l.at === 'turn-prepared' && l.turn === 2), 'turn 2 used the prepared proof');
+  const vk = JSON.parse(readFileSync(new URL('../artifacts/vfy-policy_vk.json', import.meta.url)));
+  assert.ok(await snarkjs.groth16.verify(vk, b2.policyProof.public_signals, b2.policyProof.proof));
+  assert.equal(b2.policyProof.public_signals.includes('2'), true);
+  assert.deepEqual(Object.keys(b2).sort(), Object.keys(b1).sort());
+  assert.deepEqual(Object.keys(b2).sort(), ['action', 'agentTimestamp', 'idempotencyKey', 'matchId', 'policyProof', 'protocolVersion', 'turn']);
+  // a different state on turn 3 -> nothing prepared for it; proved fresh, still valid
+  await prepareNext(t2, cfg, log);
+  const t3 = turn({ matchId, turn: 3, state: { selfBalance: '104', opponentBalance: '94', selfFortifiedUntilTurn: null, opponentFortifiedUntilTurn: null } });
+  const b3 = await playTurn(t3, cfg, log);
+  assert.ok(!logs.some((l) => l.at === 'turn-prepared' && l.turn === 3), 'a mismatched prediction is never used');
+  assert.ok(await snarkjs.groth16.verify(vk, b3.policyProof.public_signals, b3.policyProof.proof));
+  assert.deepEqual(b3.action, { type: 'EXTRACT', amount: 10 });
+});

@@ -1,7 +1,7 @@
 // Transport for the Agent Games webhook: verify the HMAC over the raw bytes before parsing, answer preflight,
 // decide Proof Gatekeeper tasks, play Steal the VFY turns, sign the exact response bytes.
 import { authenticate } from './hmac.js';
-import { playTurn, strategyFromEnv } from './steal.js';
+import { playTurn, prepareNext, strategyFromEnv } from './steal.js';
 import { GATE_TYPE, blobSeen, playGate } from './gate.js';
 
 const out = (status, payload, signer) => {
@@ -16,7 +16,7 @@ export function checkIssued(e, now = Date.now()) {
   if (!Number.isFinite(at) || at > now + 120_000 || at < now - 600_000) throw new Error('Invalid or stale issue timestamp');
 }
 
-export async function handle(raw, signature, { secret, env = process.env, now = Date.now(), seen = blobSeen(env.BLOB_READ_WRITE_TOKEN), log = (o) => console.log(JSON.stringify(o)) }) {
+export async function handle(raw, signature, { secret, env = process.env, now = Date.now(), seen = blobSeen(env.BLOB_READ_WRITE_TOKEN), log = (o) => console.log(JSON.stringify(o)), after = () => {} }) {
   if (raw.length > 64 * 1024) return out(413, { error: 'Body too large' });
   const signer = authenticate(raw, signature, secret);
   if (!signer) { log({ at: 'auth-failed', bytes: raw.length, hasHeader: Boolean(signature) }); return out(401, { error: 'Invalid signature' }); }
@@ -39,7 +39,9 @@ export async function handle(raw, signature, { secret, env = process.env, now = 
   if (!(e.eventId === 'steal-the-vfy' || (e.matchId && e.turn !== undefined))) return out(400, { error: 'Unsupported task type' }, signer);
   const started = Date.now();
   try {
-    const body = await playTurn(e, strategyFromEnv(env), log);
+    const cfg = strategyFromEnv(env);
+    const body = await playTurn(e, cfg, log);
+    after(prepareNext(e, cfg, log)); // prove the likely next turn after this response is sent
     log({ at: 'turn', mode: e.mode, matchId: e.matchId, turn: e.turn, self: e.state.selfBalance, opp: e.state.opponentBalance, action: body.action, ms: Date.now() - started });
     return out(200, body, signer);
   } catch (err) {

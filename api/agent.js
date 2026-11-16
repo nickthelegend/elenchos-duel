@@ -1,8 +1,9 @@
+import { waitUntil } from '@vercel/functions';
 import { handle } from '../src/handler.js';
 
 export async function POST(request) {
   const raw = Buffer.from(await request.arrayBuffer());
-  const r = await handle(raw, request.headers.get('x-agent-games-signature'), { secret: process.env.AGENT_GAMES_HMAC_SECRET });
+  const r = await handle(raw, request.headers.get('x-agent-games-signature'), { secret: process.env.AGENT_GAMES_HMAC_SECRET, after: (p) => waitUntil(p) });
   return new Response(r.body, { status: r.status, headers: r.headers });
 }
 

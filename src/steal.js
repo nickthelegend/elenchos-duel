@@ -10,6 +10,9 @@ import * as snarkjs from 'snarkjs';
 
 const ART = fileURLToPath(new URL('../artifacts/', import.meta.url));
 const VK = JSON.parse(readFileSync(`${ART}vfy-policy_vk.json`, 'utf8'));
+// The official circuit files, read once per instance (snarkjs takes them as in-memory buffers).
+const WASM = new Uint8Array(readFileSync(`${ART}vfy-policy.wasm`));
+const ZKEY = new Uint8Array(readFileSync(`${ART}vfy-policy_final.zkey`));
 export const PARAMS = [10n, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
 const HOLD = 0n, FORTIFY = 1n, EXTRACT = 2n;
 const NAMES = ['HOLD', 'FORTIFY', 'EXTRACT'];
@@ -44,7 +47,37 @@ export function strategyFromEnv(env = process.env) {
   return { salt: BigInt(env.STRATEGY_SALT), commitment: BigInt(env.STRATEGY_COMMITMENT) };
 }
 
-const answered = new Map();
+const answered = new Map();  // turn key -> the exact response already sent (identical retries)
+const proved = new Map();    // proof key -> { proof, publicSignals } proved ahead of time
+
+/** Proves the policy move for one exact state. Verified locally; throws if it cannot prove honestly. */
+async function prove(cfg, matchId, turn, self, opp) {
+  const pick = decide(self, opp);
+  const input = {
+    strategyParams: PARAMS.map(String), salt: cfg.salt.toString(), commitment: cfg.commitment.toString(),
+    matchId: matchIdField(matchId).toString(), turnNumber: String(turn), selfBalance: self.toString(), opponentBalance: opp.toString(),
+    action: pick.action.toString(), amount: pick.amount.toString(), circuitVersion: '1',
+  };
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, WASM, ZKEY, undefined, undefined, { singleThread: true });
+  if (!(await snarkjs.groth16.verify(VK, publicSignals, proof))) throw new Error('Local policy proof failed to verify');
+  return { proof, publicSignals };
+}
+const proofKey = (matchId, turn, self, opp) => `${matchId}:${turn}:${self}:${opp}`;
+
+/**
+ * After answering turn t, prove turn t+1 for the most likely next state: balances unchanged, which is exactly what a
+ * mirror match (both sides EXTRACT 10) produces. A prediction is only a cache entry keyed on the full public state, so
+ * a wrong guess is never used: the real turn then proves from scratch as before.
+ */
+export function prepareNext(e, cfg, log = () => {}) {
+  if (!(e.turn >= 1 && e.turn < 20)) return Promise.resolve();
+  const self = BigInt(e.state.selfBalance), opp = BigInt(e.state.opponentBalance);
+  const k = proofKey(e.matchId, e.turn + 1, self, opp);
+  if (proved.has(k)) return Promise.resolve();
+  return prove(cfg, e.matchId, e.turn + 1, self, opp)
+    .then((p) => { proved.set(k, p); if (proved.size > 200) proved.delete(proved.keys().next().value); })
+    .catch((err) => log({ at: 'prepare-failed', matchId: e.matchId, turn: e.turn + 1, error: err.message }));
+}
 
 /** Proves and answers one turn. Throws on anything it cannot prove honestly. */
 export async function playTurn(e, cfg, log = (o) => console.log(JSON.stringify(o))) {
@@ -58,13 +91,10 @@ export async function playTurn(e, cfg, log = (o) => console.log(JSON.stringify(o
   const held = e.strategyCommitment?.hash ? BigInt(e.strategyCommitment.hash) : cfg.commitment;
   if (held !== cfg.commitment) log({ at: 'commitment-mismatch', mode: e.mode, held: e.strategyCommitment.hash });
   const pick = decide(self, opp);
-  const input = {
-    strategyParams: PARAMS.map(String), salt: cfg.salt.toString(), commitment: cfg.commitment.toString(),
-    matchId: matchIdField(e.matchId).toString(), turnNumber: String(e.turn), selfBalance: self.toString(), opponentBalance: opp.toString(),
-    action: pick.action.toString(), amount: pick.amount.toString(), circuitVersion: '1',
-  };
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, `${ART}vfy-policy.wasm`, `${ART}vfy-policy_final.zkey`, undefined, undefined, { singleThread: true });
-  if (!(await snarkjs.groth16.verify(VK, publicSignals, proof))) throw new Error('Local policy proof failed to verify');
+  const pk = proofKey(e.matchId, e.turn, self, opp);
+  const ready = proved.get(pk);
+  const { proof, publicSignals } = ready ?? await prove(cfg, e.matchId, e.turn, self, opp);
+  if (ready) proved.delete(pk);
   const body = {
     protocolVersion: 'v1', matchId: e.matchId, turn: e.turn,
     action: pick.action === EXTRACT ? { type: 'EXTRACT', amount: Number(pick.amount) } : { type: NAMES[Number(pick.action)] },
@@ -76,5 +106,7 @@ export async function playTurn(e, cfg, log = (o) => console.log(JSON.stringify(o
     idempotencyKey: idempotencyKey(e.matchId, e.turn),
   };
   answered.set(key, body);
+  if (answered.size > 2000) answered.delete(answered.keys().next().value);
+  if (ready) log({ at: 'turn-prepared', matchId: e.matchId, turn: e.turn });
   return body;
 }
