@@ -13,38 +13,40 @@ export const FIELD = 21888242871839275222246405745257275088548364400416034343698
 
 const HEX = /^0x[0-9a-fA-F]{1,64}$/;
 const ADDR = /^0x[0-9a-fA-F]{40}$/;
-const UINT32 = /^(0|[1-9][0-9]{0,9})$/;
 const UUID_TAIL = /([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-([0-9a-fA-F]{12})$/;
 const FIELDS = ['registered_vk', 'proof_vk', 'minimum', 'public_balance', 'expiry_block', 'current_block',
   'recipient', 'condition_recipient', 'amount', 'max_transfer', 'proof_tx'];
 
-const u32 = (v) => typeof v === 'string' && UINT32.test(v) && BigInt(v) <= 0xffffffffn;
-const block = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
+// Numbers may arrive as decimal strings or JSON integers; both are read exactly (never as floats).
+const DEC = /^(0|[1-9][0-9]{0,9})$/;
+const num = (v) => (typeof v === 'string' && DEC.test(v) && BigInt(v) <= 0xffffffffn ? BigInt(v)
+  : Number.isSafeInteger(v) && v >= 0 && v <= 0xffffffff ? BigInt(v) : null);
 
-/** Returns null when the task is well formed, else the first problem (never interpreted, only rejected). */
+/** Returns null when the task is well formed, else the first problem (never interpreted, only rejected).
+ *  Extra input fields are ignored: the decision depends only on the documented ones. */
 export function invalid(t) {
   if (!t || t.type !== GATE_TYPE) return 'type';
   if (typeof t.task_id !== 'string' || !t.task_id || t.task_id.length > 160) return 'task_id';
   if (!Number.isFinite(Date.parse(t.deadline_at))) return 'deadline_at';
   const i = t.input;
   if (!i || typeof i !== 'object') return 'input';
-  const extra = Object.keys(i).find((k) => !FIELDS.includes(k));
-  if (extra) return `unexpected input.${extra}`;
   if (!HEX.test(i.registered_vk ?? '') || !HEX.test(i.proof_vk ?? '')) return 'vk';
-  for (const k of ['minimum', 'public_balance', 'amount', 'max_transfer']) if (!u32(i[k])) return k;
-  if (!block(i.expiry_block) || !block(i.current_block)) return 'block';
+  for (const k of ['minimum', 'public_balance', 'amount', 'max_transfer', 'expiry_block', 'current_block']) if (num(i[k]) === null) return k;
   if (!ADDR.test(i.recipient ?? '') || !ADDR.test(i.condition_recipient ?? '')) return 'address';
   if (!HEX.test(i.proof_tx ?? '')) return 'proof_tx';
   return null;
 }
 
+/** Input fields this agent does not use (logged, never acted on). */
+export const extraFields = (t) => Object.keys(t?.input ?? {}).filter((k) => !FIELDS.includes(k));
+
 /** The five arithmetic checks, in the trap encyclopedia's order. Values compared as integers, never floats. */
 export function arithmetic(i) {
   if (BigInt(i.registered_vk) !== BigInt(i.proof_vk)) return 'VK_SUBSTITUTION';
-  if (BigInt(i.public_balance) < BigInt(i.minimum)) return 'THRESHOLD_MISMATCH';
-  if (i.expiry_block <= i.current_block) return 'EXPIRED_CONDITION';
+  if (num(i.public_balance) < num(i.minimum)) return 'THRESHOLD_MISMATCH';
+  if (num(i.expiry_block) <= num(i.current_block)) return 'EXPIRED_CONDITION';
   if (BigInt(i.recipient) !== BigInt(i.condition_recipient)) return 'RECIPIENT_MISMATCH';
-  if (BigInt(i.amount) > BigInt(i.max_transfer)) return 'AMOUNT_OVERFLOW';
+  if (num(i.amount) > num(i.max_transfer)) return 'AMOUNT_OVERFLOW';
   return 'VALID_CONDITION';
 }
 
@@ -78,7 +80,7 @@ export async function proveDecision(t, approve) {
 const answered = new Map(); // task_id -> { body, reply }: identical retries get the identical answer on a warm instance
 
 /**
- * Decide one task. `seen.claim(ref, taskId)` resolves 'fresh' | 'retry' | 'reused' and throws if the store is down.
+ * Decide one task. `seen.claim(ref, taskId, mode)` resolves 'fresh' | 'retry' | 'reused' and throws if the store is down.
  * Fail closed: anything uncertain is a REJECT; an APPROVE always carries a locally verified proof.
  */
 export async function playGate(t, raw, { seen, log = () => {}, now = Date.now() } = {}) {
@@ -87,12 +89,14 @@ export async function playGate(t, raw, { seen, log = () => {}, now = Date.now() 
   const remember = (reply) => { answered.set(t.task_id, { body: raw, reply }); if (answered.size > 5000) answered.delete(answered.keys().next().value); return reply; };
 
   const bad = invalid(t);
+  const extra = extraFields(t);
+  if (extra.length) log({ at: 'gate-extra-fields', task: t?.task_id, fields: extra });
   if (bad) { log({ at: 'gate-invalid', task: t?.task_id, field: bad }); return remember({ decision: 'REJECT', reason_code: 'INVALID_TASK' }); }
   if (Date.parse(t.deadline_at) <= now) return remember({ decision: 'REJECT', reason_code: 'TIMEOUT' });
 
   const reason = arithmetic(t.input);
   let claim;
-  try { claim = seen ? await seen.claim(t.input.proof_tx, t.task_id) : null; } catch (err) { log({ at: 'gate-seen-error', task: t.task_id, error: err.message }); claim = null; }
+  try { claim = seen ? await seen.claim(t.input.proof_tx, t.task_id, t.mode) : null; } catch (err) { log({ at: 'gate-seen-error', task: t.task_id, error: err.message }); claim = null; }
 
   let reply;
   if (reason !== 'VALID_CONDITION') reply = { decision: 'REJECT', reason_code: reason };
@@ -116,9 +120,10 @@ export async function playGate(t, raw, { seen, log = () => {}, now = Date.now() 
 export function blobSeen(token = process.env.BLOB_READ_WRITE_TOKEN) {
   if (!token) return null;
   return {
-    async claim(ref, taskId) {
+    // Practice and scored tasks keep separate seen-sets, so a practice fixture can never make a scored task look reused.
+    async claim(ref, taskId, mode) {
       const { put, get } = await import('@vercel/blob');
-      const pathname = `seen/${BigInt(ref).toString(16)}.json`;
+      const pathname = mode === 'practice' ? `seen/${BigInt(ref).toString(16)}.json` : `seen/scored/${BigInt(ref).toString(16)}.json`;
       try {
         await put(pathname, JSON.stringify({ taskId, at: new Date().toISOString() }),
           { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: 'application/json', token });

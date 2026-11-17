@@ -67,9 +67,23 @@ test('fail closed: no replay store means no APPROVE; malformed and expired tasks
   const trap = await play(task({ amount: '5000' }), down); // traps still prove their rejection
   assert.equal(trap.reason_code, 'AMOUNT_OVERFLOW'); assert.ok(await verified(trap));
   assert.equal((await play(task({ amount: '1.5' }))).reason_code, 'INVALID_TASK');
-  assert.equal((await play(task({ extra: '1' }))).reason_code, 'INVALID_TASK');
   assert.equal((await play(task({ amount: String(2 ** 32) }))).reason_code, 'INVALID_TASK');
   assert.equal((await play(task({}, { deadline_at: new Date(Date.now() - 1).toISOString() }))).reason_code, 'TIMEOUT');
+});
+
+test('tolerant input: an extra field is ignored and numbers may arrive as JSON integers or decimal strings', async () => {
+  const r = await play(task({ note: 'added later', minimum: 1000, public_balance: 1460, amount: 500, max_transfer: 1000, expiry_block: '19842201', current_block: '19832000' }));
+  assert.equal(r.decision, 'APPROVE'); assert.equal(r.reason_code, 'VALID_CONDITION'); assert.ok(await verified(r));
+  assert.equal((await play(task({ public_balance: 999, minimum: 1000 }))).reason_code, 'THRESHOLD_MISMATCH');
+  assert.equal((await play(task({ amount: 1.5 }))).reason_code, 'INVALID_TASK');
+});
+
+test('scored tasks never see practice references: the same proof_tx is fresh in scored mode', async () => {
+  const calls = [];
+  const seen = { claim: async (ref, id, mode) => { calls.push(mode); return 'fresh'; } };
+  await play(task({}, { mode: 'scored' }), seen);
+  await play(task(), seen);
+  assert.deepEqual(calls, ['scored', 'practice']);
 });
 
 test('check order follows the encyclopedia and compares integers, not strings', () => {
